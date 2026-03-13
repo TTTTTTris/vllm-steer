@@ -73,7 +73,6 @@ from .utils import (
     maybe_prefix,
 )
 
-
 class Qwen2MLP(nn.Module):
     def __init__(
         self,
@@ -282,6 +281,21 @@ class Qwen2DecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
+        self.register_buffer(
+            "steer_vec",
+            torch.zeros(config.hidden_size, dtype=torch.float32),
+            persistent=False,
+        )
+        self.register_buffer(
+            "steer_scale",
+            torch.tensor(1.0, dtype=torch.float32),
+            persistent=False,
+        )
+        self.register_buffer(
+            "steer_mask",
+            torch.tensor(0.0, dtype=torch.float32),
+            persistent=False,
+        )
 
     def forward(
         self,
@@ -303,6 +317,14 @@ class Qwen2DecoderLayer(nn.Module):
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
         hidden_states = self.mlp(hidden_states)
+        
+        # Static one-layer fused steering; always in graph
+        hidden_states = hidden_states + (
+            self.steer_mask.to(hidden_states.dtype)
+            * self.steer_scale.to(hidden_states.dtype)
+            * self.steer_vec.to(hidden_states.dtype)
+        )
+
         return hidden_states, residual
 
 
@@ -411,6 +433,34 @@ class Qwen2Model(nn.Module):
             self.norm = PPMissingLayer()
 
         self.aux_hidden_state_layers = tuple[int, ...]()
+
+    def set_static_steering(
+        self,
+        layer_idx: int,
+        steer_vec: torch.Tensor,
+        scale: float = 1.0,
+    ) -> None:
+        for i, layer in enumerate(self.layers):
+            layer.steer_mask.fill_(1.0 if i == layer_idx else 0.0)
+            if i == layer_idx:
+                vec = steer_vec.detach().to(
+                    device=layer.steer_vec.device,
+                    dtype=layer.steer_vec.dtype,
+                )
+                if vec.dim() != 1 or vec.numel() != layer.steer_vec.numel():
+                    raise ValueError(
+                        f"Expected steer_vec shape [{layer.steer_vec.numel()}], "
+                        f"got {tuple(vec.shape)}"
+                    )
+                layer.steer_vec.copy_(vec)
+                layer.steer_scale.fill_(float(scale))
+            else:
+                layer.steer_scale.zero_()
+
+    def disable_static_steering(self) -> None:
+        for layer in self.layers:
+            layer.steer_mask.zero_()
+            layer.steer_scale.zero_()
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)

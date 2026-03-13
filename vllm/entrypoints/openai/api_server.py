@@ -348,6 +348,41 @@ async def init_app_state(
         lora_modules=lora_modules,
     )
     await state.openai_serving_models.init_static_loras()
+
+    # =========================
+    # STATIC STEERING HOOK
+    # =========================
+    import os
+    import torch
+
+    def _enable_static_steering_worker(worker, steer_vec_path: str, layer_idx: int, scale: float):
+        model = worker.model_runner.model
+        steer_vec = torch.load(steer_vec_path, map_location="cpu").float().view(-1)
+
+        model.model.set_static_steering(
+            layer_idx=layer_idx,
+            steer_vec=steer_vec,
+            scale=scale,
+        )
+        return True
+
+    if os.getenv("STATIC_STEER_ENABLE", "0") == "1":
+        steer_vec_path = os.environ["STATIC_STEER_PATH"]
+        layer_idx = int(os.environ["STATIC_STEER_LAYER"])
+        scale = float(os.environ["STATIC_STEER_SCALE"])
+
+        print(
+            f"[static-steer] enabling steering "
+            f"path={steer_vec_path}, layer={layer_idx}, scale={scale}",
+            flush=True,
+        )
+
+        await engine_client.collective_rpc(
+            _enable_static_steering_worker,
+            args=(steer_vec_path, layer_idx, scale),
+        )
+    # =========================
+
     state.openai_serving_tokenization = OpenAIServingTokenization(
         engine_client,
         state.openai_serving_models,
