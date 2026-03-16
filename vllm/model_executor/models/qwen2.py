@@ -27,6 +27,7 @@
 
 from collections.abc import Iterable
 from itertools import islice
+import os
 from typing import Any
 
 import torch
@@ -296,13 +297,75 @@ class Qwen2DecoderLayer(nn.Module):
             torch.tensor(0.0, dtype=torch.float32),
             persistent=False,
         )
+        self.register_buffer(
+            "steer_match_enabled",
+            torch.tensor(0.0, dtype=torch.float32),
+            persistent=False,
+        )
+        self.register_buffer(
+            "steer_match_token_ids",
+            torch.empty(0, dtype=torch.long),
+            persistent=False,
+        )
+        self._steer_debug_enabled = os.getenv("STATIC_STEER_DEBUG", "0") == "1"
+        self._steer_debug_every = max(
+            1, int(os.getenv("STATIC_STEER_DEBUG_EVERY", "10"))
+        )
+        self._steer_debug_max_prints = max(
+            1, int(os.getenv("STATIC_STEER_DEBUG_MAX_PRINTS", "200"))
+        )
+        self._steer_debug_step = 0
+        self._steer_debug_printed = 0
+        self._steer_layer_tag = prefix
 
     def forward(
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
+        input_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        # Static one-layer fused steering; always in graph
+        steer_delta = (
+            self.steer_mask.to(hidden_states.dtype)
+            * self.steer_scale.to(hidden_states.dtype)
+            * self.steer_vec.to(hidden_states.dtype)
+        )
+        match_enabled = self.steer_match_enabled.to(
+            dtype=hidden_states.dtype,
+            device=hidden_states.device,
+        )
+        if input_ids is None:
+            # With no token IDs (e.g., non-first PP rank), only apply ungated mode.
+            token_gate = (1.0 - match_enabled)
+        else:
+            token_mask = torch.isin(
+                input_ids.to(device=self.steer_match_token_ids.device),
+                self.steer_match_token_ids,
+            ).to(dtype=hidden_states.dtype, device=hidden_states.device)
+            token_gate = ((1.0 - match_enabled) +
+                          (match_enabled * token_mask.unsqueeze(-1)))
+            if self._steer_debug_enabled and self.steer_mask.item() == 1.0:
+                self._steer_debug_step += 1
+                nonzero = int((token_gate != 0).sum().item())
+                total = int(token_gate.numel())
+                if (
+                    nonzero > 0
+                    and self._steer_debug_printed < self._steer_debug_max_prints
+                    and self._steer_debug_step % self._steer_debug_every == 0
+                ):
+                    print(
+                        "[static-steer][token-gate] "
+                        f"layer={self._steer_layer_tag} "
+                        f"step={self._steer_debug_step} "
+                        f"nonzero={nonzero}/{total}",
+                        flush=True,
+                    )
+                    self._steer_debug_printed += 1
+        # if bool(torch.all(token_gate == 0).item()):
+            # raise AssertionError("token_gate is all zeros")
+        hidden_states = hidden_states + (token_gate * steer_delta)
+        
         # Self Attention
         if residual is None:
             residual = hidden_states
@@ -318,13 +381,6 @@ class Qwen2DecoderLayer(nn.Module):
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
         hidden_states = self.mlp(hidden_states)
         
-        # Static one-layer fused steering; always in graph
-        hidden_states = hidden_states + (
-            self.steer_mask.to(hidden_states.dtype)
-            * self.steer_scale.to(hidden_states.dtype)
-            * self.steer_vec.to(hidden_states.dtype)
-        )
-
         return hidden_states, residual
 
 
@@ -439,7 +495,15 @@ class Qwen2Model(nn.Module):
         layer_idx: int,
         steer_vec: torch.Tensor,
         scale: float = 1.0,
+        match_token_ids: list[int] | None = None,
     ) -> None:
+        match_ids_tensor = None
+        if match_token_ids:
+            match_ids_tensor = torch.tensor(
+                sorted(set(int(t) for t in match_token_ids)),
+                dtype=torch.long,
+            )
+
         for i, layer in enumerate(self.layers):
             layer.steer_mask.fill_(1.0 if i == layer_idx else 0.0)
             if i == layer_idx:
@@ -454,13 +518,37 @@ class Qwen2Model(nn.Module):
                     )
                 layer.steer_vec.copy_(vec)
                 layer.steer_scale.fill_(float(scale))
+                if match_ids_tensor is not None:
+                    layer.steer_match_enabled.fill_(1.0)
+                    layer.steer_match_token_ids = match_ids_tensor.to(
+                        device=layer.steer_match_token_ids.device
+                    )
+                else:
+                    layer.steer_match_enabled.zero_()
+                    layer.steer_match_token_ids = torch.empty(
+                        0,
+                        dtype=torch.long,
+                        device=layer.steer_match_token_ids.device,
+                    )
             else:
                 layer.steer_scale.zero_()
+                layer.steer_match_enabled.zero_()
+                layer.steer_match_token_ids = torch.empty(
+                    0,
+                    dtype=torch.long,
+                    device=layer.steer_match_token_ids.device,
+                )
 
     def disable_static_steering(self) -> None:
         for layer in self.layers:
             layer.steer_mask.zero_()
             layer.steer_scale.zero_()
+            layer.steer_match_enabled.zero_()
+            layer.steer_match_token_ids = torch.empty(
+                0,
+                dtype=torch.long,
+                device=layer.steer_match_token_ids.device,
+            )
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
@@ -489,7 +577,12 @@ class Qwen2Model(nn.Module):
         ):
             if idx in self.aux_hidden_state_layers:
                 aux_hidden_states.append(hidden_states + residual)
-            hidden_states, residual = layer(positions, hidden_states, residual)
+            hidden_states, residual = layer(
+                positions,
+                hidden_states,
+                residual,
+                input_ids=input_ids,
+            )
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors(

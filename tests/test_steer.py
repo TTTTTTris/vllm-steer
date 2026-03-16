@@ -7,21 +7,42 @@ from typing import Optional
 
 import torch
 from datasets import load_dataset
+from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 
 
 MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+# STEER_VEC_PATH = "/home/jiayi_tian/TensorRouter/TensorRouter/vector_500_500/DeepSeek-R1-Distill-Qwen-1.5B/layer_21_highrank_60_transition_reflection_steervec.pt"
 STEER_VEC_PATH = "/home/jiayi_tian/TensorRouter/TensorRouter/vector_500_500/DeepSeek-R1-Distill-Qwen-1.5B/layer_20_transition_reflection_steervec.pt"
 TARGET_LAYER = 20
-STEER_SCALE = -1.0
+STEER_SCALE = -1
 
-OUTPUT_FILE = f"results/math500_static_steer_results_{STEER_SCALE}.jsonl"
-INSPECT_FILE = f"results/math500_static_steer_inspect_{STEER_SCALE}.json"
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
 
-os.environ["HF_HOME"] = "/raid0-data/jiayi_tian"
+# Define the suffix for newline tokens in the tokenizer
+target_suffix = "ĊĊ"  # "\n\n" is tokenized as "ĊĊ"
+
+# Get complete tokenizer vocabulary
+vocab = tokenizer.get_vocab()
+
+# Find all tokens and their IDs that end with the target suffix
+# These are the newline tokens we'll apply steering to
+matching_tokens_ids = [
+    token_id
+    for token, token_id in vocab.items()
+    if isinstance(token, str) and token.endswith(target_suffix)
+]
+MATCH_TOKEN_IDS: list[int] = matching_tokens_ids
+
+TASK='AIME'
+
+OUTPUT_FILE = f"results/${TASK}_static_steer_results_{STEER_SCALE}.jsonl"
+INSPECT_FILE = f"results/${TASK}_static_steer_inspect_{STEER_SCALE}.json"
+
+os.environ["HF_HOME"] = "/data/jiayi"
 os.environ["VLLM_USE_V1"] = "1"
 os.environ["VLLM_ALLOW_INSECURE_SERIALIZATION"] = "1"
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 
 def build_prompt(problem: str) -> str:
@@ -37,7 +58,13 @@ def extract_boxed(text: str) -> Optional[str]:
     return matches[-1].strip() if matches else None
 
 
-def _enable_static_steering_worker(worker, steer_vec_path: str, layer_idx: int, scale: float):
+def _enable_static_steering_worker(
+    worker,
+    steer_vec_path: str,
+    layer_idx: int,
+    scale: float,
+    match_token_ids: list[int] | None,
+):
     # This runs inside each vLLM worker process.
     model = worker.model_runner.model
 
@@ -51,6 +78,7 @@ def _enable_static_steering_worker(worker, steer_vec_path: str, layer_idx: int, 
         layer_idx=layer_idx,
         steer_vec=steer_vec,
         scale=scale,
+        match_token_ids=match_token_ids,
     )
     return True
 
@@ -61,10 +89,16 @@ def _disable_static_steering_worker(worker):
     return True
 
 
-def enable_static_steering(llm: LLM, steer_vec_path: str, layer_idx: int, scale: float = 1.0):
+def enable_static_steering(
+    llm: LLM,
+    steer_vec_path: str,
+    layer_idx: int,
+    scale: float = 1.0,
+    match_token_ids: list[int] | None = None,
+):
     return llm.collective_rpc(
         _enable_static_steering_worker,
-        args=(steer_vec_path, layer_idx, scale),
+        args=(steer_vec_path, layer_idx, scale, match_token_ids),
     )
 
 
@@ -83,6 +117,8 @@ def _inspect_static_steering_worker(worker, layer_idx: int):
         "device": str(layer.steer_vec.device),
         "norm": float(layer.steer_vec.norm().item()),
         "first8": layer.steer_vec[:8].detach().cpu().tolist(),
+        "match_enabled": float(layer.steer_match_enabled.item()),
+        "match_token_ids": layer.steer_match_token_ids.detach().cpu().tolist(),
     }
 
 
@@ -125,8 +161,8 @@ def extract_box(pred_str):
 problems = []
 answers = []
 
-data = load_dataset("HuggingFaceH4/MATH-500", split="test")
-# data = load_dataset("HuggingFaceH4/aime_2024", split="train")
+# data = load_dataset("HuggingFaceH4/MATH-500", split="test")
+data = load_dataset("HuggingFaceH4/aime_2024", split="train")
 for example in data:
     gt = extract_box(example["solution"])
     problems.append(example["problem"])
@@ -152,6 +188,7 @@ enable_static_steering(
     steer_vec_path=STEER_VEC_PATH,
     layer_idx=TARGET_LAYER,
     scale=STEER_SCALE,
+    match_token_ids=MATCH_TOKEN_IDS or None,
 )
 # disable_static_steering(
 #     llm,
@@ -192,6 +229,7 @@ with open(OUTPUT_FILE, "w", encoding="utf-8") as file:
 
 save_json(OUTPUT_FILE.replace(".jsonl", "_summary.json"), {
     "steer_scale": STEER_SCALE,
+    "match_token_ids": MATCH_TOKEN_IDS,
     "target_layer": TARGET_LAYER,
     "steer_vec_path": STEER_VEC_PATH,
     "accuracy": accuracy,

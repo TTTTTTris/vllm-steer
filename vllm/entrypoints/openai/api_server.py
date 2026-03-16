@@ -366,10 +366,29 @@ async def init_app_state(
     # =========================
     # STATIC STEERING HOOK
     # =========================
+    import json
     import os
     import torch
 
-    def _enable_static_steering_worker(worker, steer_vec_path: str, layer_idx: int, scale: float):
+    def _parse_match_token_ids(raw: str | None) -> list[int] | None:
+        if raw is None or not raw.strip():
+            return None
+        raw = raw.strip()
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [int(x) for x in parsed]
+        except Exception:
+            pass
+        return [int(x.strip()) for x in raw.split(",") if x.strip()]
+
+    def _enable_static_steering_worker(
+        worker,
+        steer_vec_path: str,
+        layer_idx: int,
+        scale: float,
+        match_token_ids: list[int] | None,
+    ):
         model = worker.model_runner.model
         steer_vec = torch.load(steer_vec_path, map_location="cpu").float().view(-1)
 
@@ -377,6 +396,7 @@ async def init_app_state(
             layer_idx=layer_idx,
             steer_vec=steer_vec,
             scale=scale,
+            match_token_ids=match_token_ids,
         )
         return True
 
@@ -384,16 +404,20 @@ async def init_app_state(
         steer_vec_path = os.environ["STATIC_STEER_PATH"]
         layer_idx = int(os.environ["STATIC_STEER_LAYER"])
         scale = float(os.environ["STATIC_STEER_SCALE"])
+        match_token_ids = _parse_match_token_ids(
+            os.getenv("STATIC_STEER_MATCH_TOKEN_IDS")
+        )
 
         print(
             f"[static-steer] enabling steering "
-            f"path={steer_vec_path}, layer={layer_idx}, scale={scale}",
+            f"path={steer_vec_path}, layer={layer_idx}, scale={scale}, "
+            f"match_token_ids={match_token_ids if match_token_ids else 'ALL'}",
             flush=True,
         )
 
         await engine_client.collective_rpc(
             _enable_static_steering_worker,
-            args=(steer_vec_path, layer_idx, scale),
+            args=(steer_vec_path, layer_idx, scale, match_token_ids),
         )
     # =========================
 
