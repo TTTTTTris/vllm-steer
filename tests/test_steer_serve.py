@@ -53,7 +53,7 @@ NUM_SAMPLES = -1
 MAX_TOKENS = 16384
 task='aime_2024'
 
-OUTPUT_FILE = f"results/${task}_serve_results_{STATIC_STEER_ENABLE}_{STEER_SCALE}.jsonl"
+OUTPUT_FILE = f"results/{task}_serve_results_{STATIC_STEER_ENABLE}_{STEER_SCALE}.jsonl"
 SUMMARY_FILE = OUTPUT_FILE.replace(".jsonl", "_summary.json")
 
 import time
@@ -106,10 +106,21 @@ def validate_static_steer_config():
     if abs(float(STEER_SCALE)) < 1e-12:
         raise ValueError("STATIC_STEER_ENABLE=1 but STEER_SCALE is 0, no steering effect")
 
-def wait_until_server_ready(base_url: str, timeout_s: int = 300):
+def wait_until_server_ready(
+    base_url: str,
+    proc: subprocess.Popen,
+    log_reader: ServerLogReader,
+    timeout_s: int = 300,
+):
     start = time.time()
     last_err = None
     while time.time() - start < timeout_s:
+        if proc.poll() is not None:
+            raise RuntimeError(
+                "Server process exited before becoming ready. "
+                f"exit_code={proc.returncode}\n"
+                f"Server log tail:\n{log_reader.tail()}"
+            )
         try:
             r = requests.get(f"{base_url}/health", timeout=5)
             if r.ok:
@@ -118,7 +129,9 @@ def wait_until_server_ready(base_url: str, timeout_s: int = 300):
             last_err = e
         time.sleep(2)
     raise RuntimeError(
-        f"Server did not become ready within {timeout_s}s. Last error: {last_err}"
+        "Server did not become ready within "
+        f"{timeout_s}s. Last error: {last_err}\n"
+        f"Server log tail:\n{log_reader.tail()}"
     )
 
 
@@ -245,6 +258,7 @@ def stop_server(proc: subprocess.Popen):
 def main():
     run_start = time.time()
     validate_static_steer_config()
+    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
     data = load_dataset(f"HuggingFaceH4/{task}", split="train")
     if NUM_SAMPLES > 0:
         data = data.select(range(NUM_SAMPLES))
@@ -256,11 +270,18 @@ def main():
 
     proc, log_reader = start_server()
     try:
-        wait_until_server_ready(BASE_URL)
+        wait_until_server_ready(BASE_URL, proc, log_reader)
 
         if STATIC_STEER_ENABLE == "1":
-            marker = "[static-steer] enabling steering"
-            if not log_reader.wait_for(marker, timeout_s=30):
+            steer_markers = [
+                "[static-steer] enabling steering",
+                "[static-steer] non-eager mode detected",
+            ]
+            marker_found = any(
+                log_reader.wait_for(marker, timeout_s=30)
+                for marker in steer_markers
+            )
+            if not marker_found:
                 raise RuntimeError(
                     "Expected static steering startup log not found. "
                     "Server log tail:\n"

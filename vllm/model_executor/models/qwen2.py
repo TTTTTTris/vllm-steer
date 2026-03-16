@@ -343,6 +343,12 @@ class Qwen2DecoderLayer(nn.Module):
                 input_ids.to(device=self.steer_match_token_ids.device),
                 self.steer_match_token_ids,
             ).to(dtype=hidden_states.dtype, device=hidden_states.device)
+            if self._steer_debug_enabled and self.steer_mask.item() == 1.0:
+                print(
+                        f"[static-steer][debug] input_ids={input_ids.tolist()} "
+                        f"token_mask={token_mask}",
+                        flush=True,
+                    )
             token_gate = ((1.0 - match_enabled) +
                           (match_enabled * token_mask.unsqueeze(-1)))
             if self._steer_debug_enabled and self.steer_mask.item() == 1.0:
@@ -359,6 +365,8 @@ class Qwen2DecoderLayer(nn.Module):
                         f"layer={self._steer_layer_tag} "
                         f"step={self._steer_debug_step} "
                         f"nonzero={nonzero}/{total}",
+                        f"token_gate={token_gate}",
+                        f"steer_delta={steer_delta[:10]}",
                         flush=True,
                     )
                     self._steer_debug_printed += 1
@@ -494,15 +502,9 @@ class Qwen2Model(nn.Module):
         self,
         layer_idx: int,
         steer_vec: torch.Tensor,
+        match_token_ids: torch.Tensor | None,
         scale: float = 1.0,
-        match_token_ids: list[int] | None = None,
     ) -> None:
-        match_ids_tensor = None
-        if match_token_ids:
-            match_ids_tensor = torch.tensor(
-                sorted(set(int(t) for t in match_token_ids)),
-                dtype=torch.long,
-            )
 
         for i, layer in enumerate(self.layers):
             layer.steer_mask.fill_(1.0 if i == layer_idx else 0.0)
@@ -518,10 +520,11 @@ class Qwen2Model(nn.Module):
                     )
                 layer.steer_vec.copy_(vec)
                 layer.steer_scale.fill_(float(scale))
-                if match_ids_tensor is not None:
+                if match_token_ids is not None and match_token_ids.numel() > 0:
                     layer.steer_match_enabled.fill_(1.0)
-                    layer.steer_match_token_ids = match_ids_tensor.to(
-                        device=layer.steer_match_token_ids.device
+                    layer.steer_match_token_ids = match_token_ids.to(
+                        device=layer.steer_match_token_ids.device,
+                        dtype=torch.long,
                     )
                 else:
                     layer.steer_match_enabled.zero_()
