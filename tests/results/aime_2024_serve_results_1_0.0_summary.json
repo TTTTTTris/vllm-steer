@@ -2,10 +2,10 @@
   "model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
   "steer_vec_path": "/home/jiayi_tian/TensorRouter/TensorRouter/vector_500_500/DeepSeek-R1-Distill-Qwen-1.5B/layer_21_highrank_60_transition_reflection_steervec.pt",
   "target_layer": 20,
-  "steer_scale": 1.0,
+  "steer_scale": 0.0,
   "num_samples": 30,
-  "accuracy": 0.26666666666666666,
-  "elapsed_seconds": 1746.9434523582458,
-  "elapsed_minutes": 29.115724205970764,
-  "results_file": "results/$aime_2024_serve_results_1_1.0.jsonl"
+  "accuracy": 0.16666666666666666,
+  "elapsed_seconds": 4828.430515766144,
+  "elapsed_minutes": 80.47384192943574,
+  "results_file": "results/aime_2024_serve_results_1_0.0.jsonl"
 }

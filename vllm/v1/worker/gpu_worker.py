@@ -216,7 +216,7 @@ class Worker(WorkerBase):
         setter(
             layer_idx=layer_idx,
             steer_vec=steer_vec,
-            match_token_ids=match_token_ids,
+            match_token_id=match_token_ids,
             scale=scale,
         )
         self._static_steering_applied = True

@@ -18,34 +18,40 @@ MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 # STEER_VEC_PATH = "/home/jiayi_tian/TensorRouter/TensorRouter/vector_500_500/DeepSeek-R1-Distill-Qwen-1.5B/layer_20_transition_reflection_steervec.pt"
 STEER_VEC_PATH = "/home/jiayi_tian/TensorRouter/TensorRouter/vector_500_500/DeepSeek-R1-Distill-Qwen-1.5B/layer_21_highrank_60_transition_reflection_steervec.pt"
 TARGET_LAYER = 20
-STEER_SCALE = float(os.getenv("STEER_SCALE", "1"))
-STATIC_STEER_ENABLE = os.getenv("STATIC_STEER_ENABLE", "1")
+STEER_SCALE = float(os.getenv("STEER_SCALE", "0"))
+STATIC_STEER_ENABLE = os.getenv("STATIC_STEER_ENABLE", "0")
 STATIC_STEER_DEBUG = os.getenv("STATIC_STEER_DEBUG", "0")
 STATIC_STEER_DEBUG_EVERY = os.getenv("STATIC_STEER_DEBUG_EVERY", "1")
 STATIC_STEER_DEBUG_MAX_PRINTS = os.getenv("STATIC_STEER_DEBUG_MAX_PRINTS", "500")
 
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
+tok = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
 
-# Define the suffix for newline tokens in the tokenizer
-target_suffix = "ĊĊ"  # "\n\n" is tokenized as "ĊĊ"
+# # Define the suffix for newline tokens in the tokenizer
+# target_suffix = "ĊĊ"  # "\n\n" is tokenized as "ĊĊ"
 
-# Get complete tokenizer vocabulary
-vocab = tokenizer.get_vocab()
+# # Get complete tokenizer vocabulary
+# vocab = tokenizer.get_vocab()
 
-# Find all tokens and their IDs that end with the target suffix
-# These are the newline tokens we'll apply steering to
-matching_tokens_ids = [
-    token_id
-    for token, token_id in vocab.items()
-    if isinstance(token, str) and token.endswith(target_suffix)
-]
-STATIC_STEER_MATCH_TOKEN_IDS = matching_tokens_ids
+# # Find all tokens and their IDs that end with the target suffix
+# # These are the newline tokens we'll apply steering to
+# matching_tokens_ids = [
+#     token_id
+#     for token, token_id in vocab.items()
+#     if isinstance(token, str) and token.endswith(target_suffix)
+# ]
 
-GPU = "2"
+from transformers import AutoTokenizer
+
+print("newline:", tok.encode("\n", add_special_tokens=False))
+print("double newline:", tok.encode("\n\n", add_special_tokens=False))
+
+STATIC_STEER_MATCH_TOKEN_ID = tok.encode("\n\n", add_special_tokens=False)[0]
+
+GPU = "5"
 
 HOST = "localhost"
-PORT = 8008
+PORT = os.getenv("PORT", "8008")
 BASE_URL = f"http://{HOST}:{PORT}"
 OPENAI_API_KEY = "EMPTY"
 
@@ -53,7 +59,8 @@ NUM_SAMPLES = -1
 MAX_TOKENS = 16384
 task='aime_2024'
 
-OUTPUT_FILE = f"results/{task}_serve_results_{STATIC_STEER_ENABLE}_{STEER_SCALE}.jsonl"
+OUTPUT_FILE = f"results/{task}_serve_results_{STATIC_STEER_ENABLE}_{STEER_SCALE}_debug_{NUM_SAMPLES}.jsonl"
+print(OUTPUT_FILE)
 SUMMARY_FILE = OUTPUT_FILE.replace(".jsonl", "_summary.json")
 
 import time
@@ -103,8 +110,8 @@ def validate_static_steer_config():
         return
     if not STEER_VEC_PATH:
         raise ValueError("STATIC_STEER_ENABLE=1 but STEER_VEC_PATH is empty")
-    if abs(float(STEER_SCALE)) < 1e-12:
-        raise ValueError("STATIC_STEER_ENABLE=1 but STEER_SCALE is 0, no steering effect")
+    # if abs(float(STEER_SCALE)) < 1e-12:
+        # raise ValueError("STATIC_STEER_ENABLE=1 but STEER_SCALE is 0, no steering effect")
 
 def wait_until_server_ready(
     base_url: str,
@@ -207,9 +214,7 @@ def start_server():
     env["STATIC_STEER_PATH"] = STEER_VEC_PATH
     env["STATIC_STEER_LAYER"] = str(TARGET_LAYER)
     env["STATIC_STEER_SCALE"] = str(STEER_SCALE)
-    env["STATIC_STEER_MATCH_TOKEN_IDS"] = json.dumps(
-        STATIC_STEER_MATCH_TOKEN_IDS
-    )
+    env["STATIC_STEER_MATCH_TOKEN_IDS"] = str(STATIC_STEER_MATCH_TOKEN_ID)
     env["STATIC_STEER_DEBUG"] = STATIC_STEER_DEBUG
     env["STATIC_STEER_DEBUG_EVERY"] = STATIC_STEER_DEBUG_EVERY
     env["STATIC_STEER_DEBUG_MAX_PRINTS"] = STATIC_STEER_DEBUG_MAX_PRINTS
@@ -223,7 +228,12 @@ def start_server():
         "--tensor-parallel-size", "1",
         "--api-key", OPENAI_API_KEY,
         "--max-model-len", f"{MAX_TOKENS+2000}",
+        # "--gpu-memory-utilization", "0.5",
     ]
+
+    # Popen requires command args and env values to be strings/path-like.
+    cmd = [str(x) for x in cmd]
+    env = {k: str(v) for k, v in env.items()}
 
     proc = subprocess.Popen(
         cmd,

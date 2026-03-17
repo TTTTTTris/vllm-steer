@@ -4,8 +4,8 @@
   "target_layer": 20,
   "steer_scale": 1.0,
   "num_samples": 30,
-  "accuracy": 0.26666666666666666,
-  "elapsed_seconds": 1746.9434523582458,
-  "elapsed_minutes": 29.115724205970764,
-  "results_file": "results/$aime_2024_serve_results_1_1.0.jsonl"
+  "accuracy": 0.2,
+  "elapsed_seconds": 1982.1243228912354,
+  "elapsed_minutes": 33.03540538152059,
+  "results_file": "results/aime_2024_serve_results_1_1.0_debug.jsonl"
 }

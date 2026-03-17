@@ -73,6 +73,7 @@ from .utils import (
     make_layers,
     maybe_prefix,
 )
+import json
 
 class Qwen2MLP(nn.Module):
     def __init__(
@@ -303,8 +304,8 @@ class Qwen2DecoderLayer(nn.Module):
             persistent=False,
         )
         self.register_buffer(
-            "steer_match_token_ids",
-            torch.empty(0, dtype=torch.long),
+            "steer_match_token_id",
+            torch.tensor(-1, dtype=torch.long),
             persistent=False,
         )
         self._steer_debug_enabled = os.getenv("STATIC_STEER_DEBUG", "0") == "1"
@@ -339,10 +340,11 @@ class Qwen2DecoderLayer(nn.Module):
             # With no token IDs (e.g., non-first PP rank), only apply ungated mode.
             token_gate = (1.0 - match_enabled)
         else:
-            token_mask = torch.isin(
-                input_ids.to(device=self.steer_match_token_ids.device),
-                self.steer_match_token_ids,
-            ).to(dtype=hidden_states.dtype, device=hidden_states.device)
+            match_id = self.steer_match_token_id.to(input_ids.device)
+            token_mask = (input_ids == match_id).to(
+                dtype=hidden_states.dtype,
+                device=hidden_states.device,
+            )
             if self._steer_debug_enabled and self.steer_mask.item() == 1.0:
                 print(
                         f"[static-steer][debug] input_ids={input_ids.tolist()} "
@@ -498,16 +500,51 @@ class Qwen2Model(nn.Module):
 
         self.aux_hidden_state_layers = tuple[int, ...]()
 
+        # -------------------------------------------------------
+        # Static steering initialization (before compile/capture)
+        # -------------------------------------------------------
+        if os.getenv("STATIC_STEER_ENABLE", "0") == "1":
+            steer_vec_path = os.environ["STATIC_STEER_PATH"]
+            layer_idx = int(os.environ["STATIC_STEER_LAYER"])
+            scale = float(os.environ.get("STATIC_STEER_SCALE", "1.0"))
+
+            match_ids = None
+            if "STATIC_STEER_MATCH_TOKEN_IDS" in os.environ:
+                match_ids = torch.tensor(
+                    json.loads(os.environ["STATIC_STEER_MATCH_TOKEN_IDS"]),
+                    dtype=torch.long,
+                )
+
+            print(
+                f"[static-steer] applying during model init "
+                f"(layer={layer_idx}, scale={scale}, match_ids={match_ids})",
+                flush=True,
+            )
+
+            steer_vec = torch.load(steer_vec_path, map_location="cpu")
+            if isinstance(steer_vec, dict):
+                steer_vec = steer_vec.get("steer_vec", steer_vec)
+
+            if not isinstance(steer_vec, torch.Tensor):
+                steer_vec = torch.tensor(steer_vec, dtype=torch.float32)
+
+            self.set_static_steering(
+                layer_idx=layer_idx,
+                steer_vec=steer_vec,
+                scale=scale,
+                match_token_id=match_ids,
+            )
+
     def set_static_steering(
         self,
         layer_idx: int,
         steer_vec: torch.Tensor,
-        match_token_ids: torch.Tensor | None,
         scale: float = 1.0,
+        match_token_id: int | None = None,
     ) -> None:
-
         for i, layer in enumerate(self.layers):
             layer.steer_mask.fill_(1.0 if i == layer_idx else 0.0)
+
             if i == layer_idx:
                 vec = steer_vec.detach().to(
                     device=layer.steer_vec.device,
@@ -518,40 +555,27 @@ class Qwen2Model(nn.Module):
                         f"Expected steer_vec shape [{layer.steer_vec.numel()}], "
                         f"got {tuple(vec.shape)}"
                     )
+
                 layer.steer_vec.copy_(vec)
                 layer.steer_scale.fill_(float(scale))
-                if match_token_ids is not None and match_token_ids.numel() > 0:
+
+                if match_token_id is not None:
                     layer.steer_match_enabled.fill_(1.0)
-                    layer.steer_match_token_ids = match_token_ids.to(
-                        device=layer.steer_match_token_ids.device,
-                        dtype=torch.long,
-                    )
+                    layer.steer_match_token_id.fill_(int(match_token_id))
                 else:
                     layer.steer_match_enabled.zero_()
-                    layer.steer_match_token_ids = torch.empty(
-                        0,
-                        dtype=torch.long,
-                        device=layer.steer_match_token_ids.device,
-                    )
+                    layer.steer_match_token_id.fill_(-1)
             else:
                 layer.steer_scale.zero_()
                 layer.steer_match_enabled.zero_()
-                layer.steer_match_token_ids = torch.empty(
-                    0,
-                    dtype=torch.long,
-                    device=layer.steer_match_token_ids.device,
-                )
+                layer.steer_match_token_id.fill_(-1)
 
     def disable_static_steering(self) -> None:
         for layer in self.layers:
             layer.steer_mask.zero_()
             layer.steer_scale.zero_()
             layer.steer_match_enabled.zero_()
-            layer.steer_match_token_ids = torch.empty(
-                0,
-                dtype=torch.long,
-                device=layer.steer_match_token_ids.device,
-            )
+            layer.steer_match_token_id.fill_(-1)
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
