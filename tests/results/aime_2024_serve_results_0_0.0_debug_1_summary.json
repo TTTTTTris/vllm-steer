@@ -5,7 +5,7 @@
   "steer_scale": 0.0,
   "num_samples": 1,
   "accuracy": 1.0,
-  "elapsed_seconds": 53.30113673210144,
-  "elapsed_minutes": 0.8883522788683573,
+  "elapsed_seconds": 53.37757086753845,
+  "elapsed_minutes": 0.8896261811256408,
   "results_file": "results/aime_2024_serve_results_0_0.0_debug_1.jsonl"
 }

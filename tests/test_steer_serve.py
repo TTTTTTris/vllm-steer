@@ -48,14 +48,14 @@ print("double newline:", tok.encode("\n\n", add_special_tokens=False))
 
 STATIC_STEER_MATCH_TOKEN_ID = tok.encode("\n\n", add_special_tokens=False)[0]
 
-GPU = "5"
+GPU = os.getenv("GPU", "5")
 
 HOST = "localhost"
 PORT = os.getenv("PORT", "8008")
 BASE_URL = f"http://{HOST}:{PORT}"
 OPENAI_API_KEY = "EMPTY"
 
-NUM_SAMPLES = -1
+NUM_SAMPLES = 1
 MAX_TOKENS = 16384
 task='aime_2024'
 
