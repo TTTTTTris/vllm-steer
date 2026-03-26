@@ -1,0 +1,14 @@
+{
+  "model": "Qwen/Qwen3-4B",
+  "task": "aime_2024",
+  "steer_enable": 0,
+  "steer_scale": 0.0,
+  "match_token_ids": 271,
+  "target_layer": 20,
+  "steer_vec_path": "",
+  "accuracy": 0.4,
+  "avg_output_tokens": 8658.2,
+  "total_time_seconds": 281.0754220299423,
+  "num_samples": 30,
+  "results_file": "results/aime_2024_serve_results_0.jsonl"
+}
