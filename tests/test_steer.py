@@ -24,6 +24,7 @@ STATIC_STEER_SCALE = float(os.getenv("STATIC_STEER_SCALE", "0"))
 STATIC_STEER_ENABLE = int(os.getenv("STATIC_STEER_ENABLE", "0"))
 STATIC_STEER_LAYER = int(os.getenv("STATIC_STEER_LAYER", "20"))
 STATIC_STEER_PATH = os.getenv("STATIC_STEER_PATH", "")
+RANK = os.getenv("RANK", "0")
 MODEL_PATH = os.getenv("MODEL_PATH")
 # STATIC_STEER_DEBUG = os.getenv("STATIC_STEER_DEBUG", "0")
 # STATIC_STEER_DEBUG_EVERY = os.getenv("STATIC_STEER_DEBUG_EVERY", "1")
@@ -96,9 +97,9 @@ def _task_to_prompt_option(task_name: str) -> str:
     raise NotImplementedError(f"Unsupported task: {task_name}")
 
 if STATIC_STEER_ENABLE==0:
-    OUTPUT_FILE = f"results/{task}_serve_results_{STATIC_STEER_ENABLE}.jsonl"
+    OUTPUT_FILE = f"results/{task}_serve_results_{STATIC_STEER_ENABLE}_test6.jsonl"
 else:
-    OUTPUT_FILE = f"results/{task}_serve_results_{STATIC_STEER_ENABLE}_{STATIC_STEER_SCALE}_{NUM_SAMPLES}.jsonl"
+    OUTPUT_FILE = f"results/{task}_serve_results_{STATIC_STEER_ENABLE}_{RANK}_{STATIC_STEER_SCALE}_{NUM_SAMPLES}.jsonl"
 print(OUTPUT_FILE)
 SUMMARY_FILE = OUTPUT_FILE.replace(".jsonl", "_summary.json")
 os.makedirs("results", exist_ok=True)
@@ -126,49 +127,6 @@ def save_json(path: str, payload) -> None:
     with open(path, "w", encoding="utf-8") as file:
         json.dump(payload, file, ensure_ascii=False, indent=2)
 
-def load_test6_benchmark():
-    # dataset = load_dataset(
-    #     'json',
-    #     data_files="/home/jiayi/TensorRouter/TensorRouter/data/test6.jsonl",
-    #     split="train",
-    # )
-    dataset = load_dataset("livecodebench/code_generation_lite", version_tag="release_v6", split='test')
-    
-    benchmark = []
-
-    import json
-    import base64
-    import zlib
-
-    for sample in dataset:
-        public_cases = json.loads(sample["public_test_cases"])
-
-        import pickle
-
-        private_cases = pickle.loads(
-            zlib.decompress(
-                base64.b64decode(sample["private_test_cases"])
-            )
-        )
-
-        if isinstance(private_cases, str):
-            private_cases = json.loads(private_cases)
-        all_cases = public_cases + private_cases
-
-        inputs = [x["input"] for x in all_cases]
-        outputs = [x["output"] for x in all_cases]
-
-        benchmark.append({
-            "question_id": str(sample["question_id"]),
-            'question_content': str(sample["question_content"]),
-            'starter_code': str(sample["starter_code"]),
-            "input_output": json.dumps({
-                "inputs": inputs,
-                "outputs": outputs,
-            }),
-        })
-
-    return benchmark
 
 #%%
 import json
@@ -211,15 +169,17 @@ problems = []
 answers = []
 
 if task == "livecodebench_v6":
-    # problems = load_test6_benchmark()
     data = load_dataset("livecodebench/code_generation_lite", version_tag="release_v6", split='test')
+    # data = load_dataset(
+    #     "json",
+    #     data_files="/home/jiayi/TensorRouter/TensorRouter/data/test6.jsonl",
+    #     split="train",
+    # )
     for example in data:
-        # gt = extract_box(example["solution"])
         problems.append(dict(example))
-        # answers.append(example["answer"])
+
     print(f"Loaded {len(problems)} problems from LiveCodeBench v6")
 else:
-    # data = load_dataset("HuggingFaceH4/MATH-500", split="test")
     data = load_dataset(f"HuggingFaceH4/{task}", split="train")
     for example in data:
         gt = extract_box(example["solution"])
@@ -232,36 +192,38 @@ print("Answers:", answers[:2])
 
 
 prompt_option = _task_to_prompt_option(task)
-if prompt_option == "lcb":
-    examples = [
-        get_first_user_msg(prompt, prompt_option) + "Assistant:\n"
-        for prompt in problems[:NUM_SAMPLES]
-    ]
-else:
-    examples = [
-        get_first_user_msg(prompt, prompt_option) + "Assistant: <think>"
-        for prompt in problems[:NUM_SAMPLES]
-    ]
 
 llm = LLM(
     model=MODEL_PATH,
     tensor_parallel_size=1,
-    gpu_memory_utilization = 0.9,
-    max_num_seqs=64
+    gpu_memory_utilization = 0.8,
     # no EasySteer flags needed
     # no enforce_eager needed if your static patch is CUDA-graph safe
 )
 
 
+selected_problems = problems[-NUM_SAMPLES:]
+
+messages = [
+    [
+        {"role": "user", "content": get_first_user_msg(p, prompt_option)}
+    ]
+    for p in selected_problems
+]
+
+selected_examples = [
+    tok.apply_chat_template(m, tokenize=False, add_generation_prompt=True)
+    for m in messages
+]
 
 
 # Generate response with SEAL steering
 example_answers = llm.generate(
-    examples, 
+    selected_examples, 
     SamplingParams(
         temperature=0.6, top_p=0.95, # https://huggingface.co/Qwen/QwQ-32B#usage-guidelines
         # temperature=0,
-        max_tokens=16384+2000,
+        max_tokens=8192+2000,
         skip_special_tokens=False,
     ), 
 )
@@ -299,7 +261,7 @@ if task == "livecodebench_v6":
     from lcb_runner.benchmarks.code_generation import CodeGenerationProblem
     from lcb_runner.evaluation import codegen_metrics
     
-    eval_problems = [CodeGenerationProblem(**p) for p in problems[:len(outputs)]]
+    eval_problems = [CodeGenerationProblem(**p) for p in selected_problems]
     eval_samples = [p.get_evaluation_sample() for p in eval_problems]
     extracted_codes = [extract_python_code_block(out) for out in outputs]
     generations = [[code] for code in extracted_codes]
@@ -322,8 +284,8 @@ if task == "livecodebench_v6":
         for i, llm_output in enumerate(outputs):
             file.write(json.dumps({
                 "index": i,
-                "question_id": problems[i].get("question_id"),
-                "question_title": problems[i].get("question_title"),
+                "question_id": selected_problems[i].get("question_id"),
+                "question_title": selected_problems[i].get("question_title"),
                 "model_output": llm_output,
                 "extracted_code": extracted_codes[i],
                 "output_tokens": output_token_counts[i],

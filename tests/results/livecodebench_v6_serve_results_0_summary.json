@@ -6,9 +6,9 @@
   "match_token_ids": 271,
   "target_layer": 20,
   "steer_vec_path": "",
-  "accuracy": 0.6057142857142858,
-  "avg_output_tokens": 9915.502857142857,
-  "total_time_seconds": 1074.3316866783425,
+  "accuracy": 0.0,
+  "avg_output_tokens": 13233.44,
+  "total_time_seconds": 1578.7441226458177,
   "num_samples": 175,
   "results_file": "results/livecodebench_v6_serve_results_0.jsonl"
 }
