@@ -4,7 +4,7 @@ set -euo pipefail
 export HF_HOME="/data/jiayi"
 export MODEL_NAME='Qwen3-4B'
 export MODEL_PATH='Qwen/'$MODEL_NAME
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=7
 
 STATIC_STEER_ENABLE=0 python test_steer.py
 

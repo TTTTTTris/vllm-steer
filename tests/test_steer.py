@@ -54,9 +54,9 @@ print("double newline:", tok.encode("\n\n", add_special_tokens=False))
 
 STATIC_STEER_MATCH_TOKEN_IDS = tok.encode("\n\n", add_special_tokens=False)[0]
 
-NUM_SAMPLES = 175
+NUM_SAMPLES = 30
 MAX_TOKENS = 8192
-task='livecodebench_v6'
+task='aime_2024'
 
 
 def get_first_user_msg(problem, options=None):
@@ -221,8 +221,8 @@ selected_examples = [
 example_answers = llm.generate(
     selected_examples, 
     SamplingParams(
-        temperature=0.6, top_p=0.95, # https://huggingface.co/Qwen/QwQ-32B#usage-guidelines
-        # temperature=0,
+        # temperature=0.6, top_p=0.95, # https://huggingface.co/Qwen/QwQ-32B#usage-guidelines
+        temperature=0,
         max_tokens=8192+2000,
         skip_special_tokens=False,
     ), 
