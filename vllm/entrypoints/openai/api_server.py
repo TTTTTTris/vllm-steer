@@ -367,11 +367,93 @@ async def init_app_state(
     )
     await state.openai_serving_models.init_static_loras()
 
-    state.openai_serving_render = OpenAIServingRender(
-        model_config=engine_client.model_config,
-        renderer=engine_client.renderer,
-        io_processor=engine_client.io_processor,
-        model_registry=state.openai_serving_models.registry,
+    # =========================
+    # STATIC STEERING HOOK
+    # =========================
+    import json
+    import os
+    import torch
+
+    def _parse_match_token_ids(raw: str | None) -> list[int] | None:
+        if raw is None or not raw.strip():
+            return None
+        raw = raw.strip()
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [int(x) for x in parsed]
+        except Exception:
+            pass
+        return [int(x.strip()) for x in raw.split(",") if x.strip()]
+
+    # def _enable_static_steering_worker(
+    #     worker,
+    #     steer_vec_path: str,
+    #     layer_idx: int,
+    #     match_token_ids: torch.tensor,
+    #     scale: float,
+    # ):
+    #     model = worker.model_runner.model
+    #     steer_vec = torch.load(steer_vec_path, map_location="cpu").float().view(-1)
+
+    #     model.model.set_static_steering(
+    #         layer_idx=layer_idx,
+    #         steer_vec=steer_vec,
+    #         match_token_ids=match_token_ids,
+    #         scale=scale,
+    #     )
+    #     return True
+
+    if os.getenv("STATIC_STEER_ENABLE", "0") == "1":
+        steer_vec_path = os.environ["STATIC_STEER_PATH"]
+        layer_idx = int(os.environ["STATIC_STEER_LAYER"])
+        scale = float(os.environ["STATIC_STEER_SCALE"])
+        parsed_match_token_ids = _parse_match_token_ids(
+            os.getenv("STATIC_STEER_MATCH_TOKEN_IDS")
+        )
+        # match_token_ids = (
+        #     torch.tensor(parsed_match_token_ids, dtype=torch.long)
+        #     if parsed_match_token_ids
+        #     else None
+        # )
+
+        print(
+            f"[static-steer] config detected: "
+            f"path={steer_vec_path}, layer={layer_idx}, scale={scale}, "
+            f"match_token_ids={parsed_match_token_ids if parsed_match_token_ids else 'ALL'}, "
+            f"enforce_eager={vllm_config.model_config.enforce_eager}",
+            flush=True,
+        )
+
+        if not vllm_config.model_config.enforce_eager:
+            print(
+                "[static-steer] non-eager mode detected; steering already "
+                "applied in worker startup before CUDA graph capture. "
+                "Skipping API-time reapply.",
+                flush=True,
+            )
+        else:
+            print(
+                "[static-steer] non-eager mode: expecting steering to be applied "
+                "during worker/model startup before compile/capture",
+                flush=True,
+            )
+            # print(
+            #     f"[static-steer] enabling steering "
+            #     f"path={steer_vec_path}, layer={layer_idx}, scale={scale}, "
+            #     f"match_token_ids={parsed_match_token_ids if parsed_match_token_ids else 'ALL'}",
+            #     flush=True,
+            # )
+
+            # await engine_client.collective_rpc(
+            #     _enable_static_steering_worker,
+            #     args=(steer_vec_path, layer_idx, match_token_ids, scale),
+            # )
+    # =========================
+
+    state.openai_serving_tokenization = OpenAIServingTokenization(
+        engine_client,
+        state.openai_serving_models,
         request_logger=request_logger,
         chat_template=resolved_chat_template,
         chat_template_content_format=args.chat_template_content_format,

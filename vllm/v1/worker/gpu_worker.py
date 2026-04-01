@@ -3,6 +3,7 @@
 """A GPU worker class."""
 
 import gc
+import json
 import os
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
@@ -153,6 +154,81 @@ class Worker(WorkerBase):
         self.use_v2_model_runner = envs.VLLM_USE_V2_MODEL_RUNNER
         # pending non-blocking PP send work from the previous iteration
         self._pp_send_work: list[Handle] = []
+        self._static_steering_applied = False
+
+    def _apply_static_steering_from_env(self) -> None:
+        """Apply static steering in the worker before compile/cudagraph capture."""
+        if os.getenv("STATIC_STEER_ENABLE", "0") != "1":
+            return
+        if self._static_steering_applied:
+            return
+
+        steer_vec_path = os.getenv("STATIC_STEER_PATH")
+        layer_raw = os.getenv("STATIC_STEER_LAYER")
+        scale_raw = os.getenv("STATIC_STEER_SCALE")
+        if not steer_vec_path or layer_raw is None or scale_raw is None:
+            logger.warning(
+                "[static-steer] STATIC_STEER_ENABLE=1 but one or more required "
+                "env vars are missing (STATIC_STEER_PATH, "
+                "STATIC_STEER_LAYER, STATIC_STEER_SCALE). Skipping steering."
+            )
+            return
+
+        def _parse_match_token_ids(raw: str | None) -> list[int] | None:
+            if raw is None or not raw.strip():
+                return None
+            raw = raw.strip()
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return [int(x) for x in parsed]
+            except Exception:
+                pass
+            return [int(x.strip()) for x in raw.split(",") if x.strip()]
+
+        layer_idx = int(layer_raw)
+        scale = float(scale_raw)
+        parsed_match_token_ids = _parse_match_token_ids(
+            os.getenv("STATIC_STEER_MATCH_TOKEN_IDS")
+        )
+        match_token_ids = (
+            torch.tensor(parsed_match_token_ids, dtype=torch.long)
+            if parsed_match_token_ids
+            else None
+        )
+
+        steer_vec = torch.load(steer_vec_path, map_location="cpu").float().view(-1)
+
+        model = self.model_runner.model
+        setter = None
+        if hasattr(model, "model") and hasattr(model.model, "set_static_steering"):
+            setter = model.model.set_static_steering
+        elif hasattr(model, "set_static_steering"):
+            setter = model.set_static_steering
+
+        if setter is None:
+            logger.warning(
+                "[static-steer] STATIC_STEER_ENABLE=1 but model does not support "
+                "set_static_steering()."
+            )
+            return
+
+        setter(
+            layer_idx=layer_idx,
+            steer_vec=steer_vec,
+            match_token_id=match_token_ids,
+            scale=scale,
+        )
+        self._static_steering_applied = True
+        logger.info(
+            "[static-steer] worker rank %d applied steering path=%s layer=%d "
+            "scale=%s match_token_ids=%s",
+            self.rank,
+            steer_vec_path,
+            layer_idx,
+            scale,
+            match_token_ids,
+        )
 
     def sleep(self, level: int = 1) -> None:
         from vllm.device_allocator.cumem import CuMemAllocator
@@ -333,6 +409,9 @@ class Worker(WorkerBase):
             set_current_vllm_config(self.vllm_config),
         ):
             self.model_runner.load_model(load_dummy_weights=dummy_weights)
+
+        # Apply steering before any warmup/compile/cudagraph capture.
+        self._apply_static_steering_from_env()
 
         if dummy_weights:
             self.model_runner.setup_eplb_from_mapping(
@@ -568,6 +647,9 @@ class Worker(WorkerBase):
 
     @instrument(span_name="Warmup (GPU)")
     def compile_or_warm_up_model(self) -> float:
+        # Safety net: ensure steering is installed before warmup/capture.
+        self._apply_static_steering_from_env()
+
         warmup_sizes: list[int] = []
 
         if self.vllm_config.compilation_config.mode == CompilationMode.VLLM_COMPILE:

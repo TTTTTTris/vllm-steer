@@ -1,0 +1,11 @@
+{
+  "model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+  "steer_vec_path": "/home/jiayi_tian/TensorRouter/TensorRouter/vector_500_500/DeepSeek-R1-Distill-Qwen-1.5B/layer_21_highrank_60_transition_reflection_steervec.pt",
+  "target_layer": 20,
+  "steer_scale": 0.0,
+  "num_samples": 1,
+  "accuracy": 1.0,
+  "elapsed_seconds": 85.17403411865234,
+  "elapsed_minutes": 1.4195672353108724,
+  "results_file": "results/aime_2024_serve_results_1_0.0_debug.jsonl"
+}

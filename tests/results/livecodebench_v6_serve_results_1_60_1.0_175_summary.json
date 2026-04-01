@@ -1,0 +1,14 @@
+{
+  "model": "Qwen/Qwen3-4B",
+  "task": "livecodebench_v6",
+  "steer_enable": 1,
+  "steer_scale": 1.0,
+  "match_token_ids": 271,
+  "target_layer": 28,
+  "steer_vec_path": "/data/jiayi/SEAL/results/MATH_train/Qwen3-4B/baseline_10000/vector_500_500/layer_28_rank_60_transition_reflection_steervec.pt",
+  "accuracy": 0.29714285714285715,
+  "avg_output_tokens": 7974.988571428571,
+  "total_time_seconds": 606.8752625724301,
+  "num_samples": 175,
+  "results_file": "results/livecodebench_v6_serve_results_1_60_1.0_175.jsonl"
+}
