@@ -25,6 +25,7 @@
 
 from collections.abc import Iterable
 from typing import Any
+import os
 
 import torch
 from torch import nn
@@ -212,13 +213,99 @@ class Qwen3DecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
+        self.register_buffer(
+            "steer_vec",
+            torch.zeros(config.hidden_size, dtype=torch.float32),
+            persistent=False,
+        )
+        self.register_buffer(
+            "steer_scale",
+            torch.tensor(1.0, dtype=torch.float32),
+            persistent=False,
+        )
+        self.register_buffer(
+            "steer_mask",
+            torch.tensor(0.0, dtype=torch.float32),
+            persistent=False,
+        )
+        self.register_buffer(
+            "steer_match_enabled",
+            torch.tensor(0.0, dtype=torch.float32),
+            persistent=False,
+        )
+        self.register_buffer(
+            "steer_match_token_id",
+            torch.tensor(-1, dtype=torch.long),
+            persistent=False,
+        )
+        self._steer_debug_enabled = os.getenv("STATIC_STEER_DEBUG", "0") == "1"
+        self._steer_debug_every = max(
+            1, int(os.getenv("STATIC_STEER_DEBUG_EVERY", "10"))
+        )
+        self._steer_debug_max_prints = max(
+            1, int(os.getenv("STATIC_STEER_DEBUG_MAX_PRINTS", "200"))
+        )
+        self._steer_debug_step = 0
+        self._steer_debug_printed = 0
+        self._steer_layer_tag = prefix
 
     def forward(
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
+        input_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        # Static one-layer fused steering; always in graph
+        steer_delta = (
+            self.steer_mask.to(hidden_states.dtype)
+            * self.steer_scale.to(hidden_states.dtype)
+            * self.steer_vec.to(hidden_states.dtype)
+        )
+        match_enabled = self.steer_match_enabled.to(
+            dtype=hidden_states.dtype,
+            device=hidden_states.device,
+        )
+        if input_ids is None:
+            # With no token IDs (e.g., non-first PP rank), only apply ungated mode.
+            token_gate = (1.0 - match_enabled)
+        else:
+            match_id = self.steer_match_token_id.to(input_ids.device)
+            token_mask = (input_ids == match_id).to(
+                dtype=hidden_states.dtype,
+                device=hidden_states.device,
+            )
+            if self._steer_debug_enabled and self.steer_mask.item() == 1.0:
+                print(
+                        f"[static-steer][debug] input_ids={input_ids.tolist()} "
+                        f"token_mask={token_mask}",
+                        flush=True,
+                    )
+            token_gate = ((1.0 - match_enabled) +
+                          (match_enabled * token_mask.unsqueeze(-1)))
+            if self._steer_debug_enabled and self.steer_mask.item() == 1.0:
+                self._steer_debug_step += 1
+                nonzero = int((token_gate != 0).sum().item())
+                total = int(token_gate.numel())
+                if (
+                    nonzero > 0
+                    and self._steer_debug_printed < self._steer_debug_max_prints
+                    and self._steer_debug_step % self._steer_debug_every == 0
+                ):
+                    print(
+                        "[static-steer][token-gate] "
+                        f"layer={self._steer_layer_tag} "
+                        f"step={self._steer_debug_step} "
+                        f"nonzero={nonzero}/{total}",
+                        f"token_gate={token_gate}",
+                        f"steer_delta={steer_delta[:10]}",
+                        flush=True,
+                    )
+                    self._steer_debug_printed += 1
+        # if bool(torch.all(token_gate == 0).item()):
+            # raise AssertionError("token_gate is all zeros")
+        hidden_states = hidden_states + (token_gate * steer_delta)
+
         # Self Attention
         if residual is None:
             residual = hidden_states

@@ -13,19 +13,14 @@ from datasets import load_dataset
 from math_verify import parse, verify, LatexExtractionConfig, ExprExtractionConfig
 from transformers import AutoTokenizer
 
-MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-# STEER_VEC_PATH = ""
-# STEER_VEC_PATH = "/home/jiayi_tian/TensorRouter/TensorRouter/vector_500_500/DeepSeek-R1-Distill-Qwen-1.5B/layer_20_transition_reflection_steervec.pt"
-STEER_VEC_PATH = "/home/jiayi_tian/TensorRouter/TensorRouter/vector_500_500/DeepSeek-R1-Distill-Qwen-1.5B/layer_21_highrank_60_transition_reflection_steervec.pt"
-TARGET_LAYER = 20
-STEER_SCALE = float(os.getenv("STEER_SCALE", "0"))
-STATIC_STEER_ENABLE = os.getenv("STATIC_STEER_ENABLE", "0")
-STATIC_STEER_DEBUG = os.getenv("STATIC_STEER_DEBUG", "0")
-STATIC_STEER_DEBUG_EVERY = os.getenv("STATIC_STEER_DEBUG_EVERY", "1")
-STATIC_STEER_DEBUG_MAX_PRINTS = os.getenv("STATIC_STEER_DEBUG_MAX_PRINTS", "500")
+STATIC_STEER_SCALE = float(os.getenv("STATIC_STEER_SCALE", "0"))
+STATIC_STEER_ENABLE = int(os.getenv("STATIC_STEER_ENABLE", "0"))
+STATIC_STEER_LAYER = int(os.getenv("STATIC_STEER_LAYER", "20"))
+STATIC_STEER_PATH = os.getenv("STATIC_STEER_PATH", "")
+MODEL_PATH = os.getenv("MODEL_PATH")
 
 
-tok = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
+tok = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
 
 # # Define the suffix for newline tokens in the tokenizer
 # target_suffix = "ĊĊ"  # "\n\n" is tokenized as "ĊĊ"
@@ -46,9 +41,7 @@ from transformers import AutoTokenizer
 print("newline:", tok.encode("\n", add_special_tokens=False))
 print("double newline:", tok.encode("\n\n", add_special_tokens=False))
 
-STATIC_STEER_MATCH_TOKEN_ID = tok.encode("\n\n", add_special_tokens=False)[0]
-
-GPU = os.getenv("GPU", "5")
+STATIC_STEER_MATCH_TOKEN_IDS = tok.encode("\n\n", add_special_tokens=False)[0]
 
 HOST = "localhost"
 PORT = os.getenv("PORT", "8008")
@@ -59,7 +52,7 @@ NUM_SAMPLES = 1
 MAX_TOKENS = 16384
 task='aime_2024'
 
-OUTPUT_FILE = f"results/{task}_serve_results_{STATIC_STEER_ENABLE}_{STEER_SCALE}_debug_{NUM_SAMPLES}.jsonl"
+OUTPUT_FILE = f"results/{task}_serve_results_{STATIC_STEER_ENABLE}_{STATIC_STEER_SCALE}_debug_{NUM_SAMPLES}.jsonl"
 print(OUTPUT_FILE)
 SUMMARY_FILE = OUTPUT_FILE.replace(".jsonl", "_summary.json")
 
@@ -106,9 +99,9 @@ class ServerLogReader:
 
 
 def validate_static_steer_config():
-    if STATIC_STEER_ENABLE != "1":
+    if STATIC_STEER_ENABLE != 1:
         return
-    if not STEER_VEC_PATH:
+    if not STATIC_STEER_PATH:
         raise ValueError("STATIC_STEER_ENABLE=1 but STEER_VEC_PATH is empty")
     # if abs(float(STEER_SCALE)) < 1e-12:
         # raise ValueError("STATIC_STEER_ENABLE=1 but STEER_SCALE is 0, no steering effect")
@@ -144,7 +137,7 @@ def wait_until_server_ready(
 
 def generate_one(problem: str) -> str:
     payload = {
-        "model": MODEL_NAME,
+        "model": MODEL_PATH,
         "messages": build_messages(problem),
         "temperature": 0,
         "max_tokens": MAX_TOKENS,
@@ -200,35 +193,43 @@ def build_messages(problem: str):
         }
     ]
 
+
+def compute_avg_output_tokens(outputs: list[str], tokenizer: AutoTokenizer) -> float:
+    if not outputs:
+        return 0.0
+    token_counts = [
+        len(tokenizer.encode(text, add_special_tokens=False))
+        for text in outputs
+    ]
+    return sum(token_counts) / len(token_counts)
+
 def start_server():
     env = os.environ.copy()
-    env["HF_HOME"] = "/raid0-data/jiayi_tian"
-    env["CUDA_VISIBLE_DEVICES"] = GPU
+    env["HF_HOME"] = "/data/jiayi"
     env["VLLM_USE_V1"] = "1"
     env["VLLM_ALLOW_INSECURE_SERIALIZATION"] = "1"
     env["VLLM_USE_PRECOMPILED"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
 
-    # Steering config consumed by the server-side startup hook.
-    env["STATIC_STEER_ENABLE"] = STATIC_STEER_ENABLE
-    env["STATIC_STEER_PATH"] = STEER_VEC_PATH
-    env["STATIC_STEER_LAYER"] = str(TARGET_LAYER)
-    env["STATIC_STEER_SCALE"] = str(STEER_SCALE)
-    env["STATIC_STEER_MATCH_TOKEN_IDS"] = str(STATIC_STEER_MATCH_TOKEN_ID)
-    env["STATIC_STEER_DEBUG"] = STATIC_STEER_DEBUG
-    env["STATIC_STEER_DEBUG_EVERY"] = STATIC_STEER_DEBUG_EVERY
-    env["STATIC_STEER_DEBUG_MAX_PRINTS"] = STATIC_STEER_DEBUG_MAX_PRINTS
+    # # Steering config consumed by the server-side startup hook.
+    # env["STATIC_STEER_ENABLE"] = STATIC_STEER_ENABLE
+    # env["STATIC_STEER_PATH"] = STEER_VEC_PATH
+    # env["STATIC_STEER_LAYER"] = str(TARGET_LAYER)
+    # env["STATIC_STEER_SCALE"] = str(STEER_SCALE)
+    # env["STATIC_STEER_MATCH_TOKEN_IDS"] = str(STATIC_STEER_MATCH_TOKEN_ID)
+    # env["STATIC_STEER_DEBUG"] = STATIC_STEER_DEBUG
+    # env["STATIC_STEER_DEBUG_EVERY"] = STATIC_STEER_DEBUG_EVERY
+    # env["STATIC_STEER_DEBUG_MAX_PRINTS"] = STATIC_STEER_DEBUG_MAX_PRINTS
 
     cmd = [
         "vllm",
         "serve",
-        MODEL_NAME,
+        MODEL_PATH,
         "--host", HOST,
         "--port", str(PORT),
         "--tensor-parallel-size", "1",
         "--api-key", OPENAI_API_KEY,
         "--max-model-len", f"{MAX_TOKENS+2000}",
-        # "--gpu-memory-utilization", "0.5",
     ]
 
     # Popen requires command args and env values to be strings/path-like.
@@ -282,7 +283,7 @@ def main():
     try:
         wait_until_server_ready(BASE_URL, proc, log_reader)
 
-        if STATIC_STEER_ENABLE == "1":
+        if STATIC_STEER_ENABLE == 1:
             steer_markers = [
                 "[static-steer] enabling steering",
                 "[static-steer] non-eager mode detected",
@@ -303,6 +304,7 @@ def main():
         for i, problem in enumerate(problems):
             print(f"[{i+1}/{len(problems)}] decoding...")
             outputs.append(generate_one(problem))
+        avg_output_tokens = compute_avg_output_tokens(outputs, tok)
 
         extraction_target = (ExprExtractionConfig(), LatexExtractionConfig())
         results = []
@@ -325,18 +327,22 @@ def main():
         elapsed_s = time.time() - run_start
         with open(SUMMARY_FILE, "w", encoding="utf-8") as f:
             json.dump({
-                "model": MODEL_NAME,
-                "steer_vec_path": STEER_VEC_PATH,
-                "target_layer": TARGET_LAYER,
-                "steer_scale": STEER_SCALE,
-                "num_samples": len(results),
+                "model": MODEL_PATH,
+                "task": task,
+                "steer_enable": STATIC_STEER_ENABLE,
+                "steer_scale": STATIC_STEER_SCALE,
+                "match_token_ids": STATIC_STEER_MATCH_TOKEN_IDS,
+                "target_layer": STATIC_STEER_LAYER,
+                "steer_vec_path": STATIC_STEER_PATH,
                 "accuracy": acc,
-                "elapsed_seconds": elapsed_s,
-                "elapsed_minutes": elapsed_s / 60.0,
+                "avg_output_tokens": avg_output_tokens,
+                "total_time_seconds": elapsed_s,
+                "num_samples": len(results),
                 "results_file": OUTPUT_FILE,
             }, f, ensure_ascii=False, indent=2)
 
         print(f"accuracy = {acc:.4f}")
+        print(f"avg_output_tokens = {avg_output_tokens:.2f}")
     finally:
         stop_server(proc)
 

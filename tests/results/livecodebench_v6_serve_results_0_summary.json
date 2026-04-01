@@ -1,0 +1,14 @@
+{
+  "model": "Qwen/Qwen3-4B",
+  "task": "livecodebench_v6",
+  "steer_enable": 0,
+  "steer_scale": 0.0,
+  "match_token_ids": 271,
+  "target_layer": 20,
+  "steer_vec_path": "",
+  "accuracy": 0.0,
+  "avg_output_tokens": 13233.44,
+  "total_time_seconds": 1578.7441226458177,
+  "num_samples": 175,
+  "results_file": "results/livecodebench_v6_serve_results_0.jsonl"
+}
