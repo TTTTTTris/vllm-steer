@@ -2,29 +2,28 @@
 set -euo pipefail
 
 export HF_HOME="/data/jiayi"
-export MODEL_NAME='Qwen3-4B'
-export MODEL_PATH='Qwen/'$MODEL_NAME
+export MODEL_NAME='DeepSeek-R1-Distill-Qwen-1.5B'
+export MODEL_PATH='deepseek-ai/'$MODEL_NAME
 export CUDA_VISIBLE_DEVICES=7
 
-STATIC_STEER_ENABLE=0 python test_steer.py
+# STATIC_STEER_ENABLE=0 python test_steer.py
 
+# STATIC_STEER_ENABLE=1 \
+# STATIC_STEER_LAYER=20 \
+# STATIC_STEER_MATCH_TOKEN_IDS=271 \
+# STATIC_STEER_PATH="/data/jiayi/SEAL/results/MATH_train/DeepSeek-R1-Distill-Qwen-1.5B/baseline_10000/vector_500_500/layer_20_transition_reflection_steervec.pt" \
+# STATIC_STEER_SCALE=-1.0 \
+# python test_steer.py
+
+for RANK in 65 70 75 
+do
 STATIC_STEER_ENABLE=1 \
-STATIC_STEER_LAYER=28 \
+STATIC_STEER_LAYER=20 \
 STATIC_STEER_MATCH_TOKEN_IDS=271 \
-STATIC_STEER_PATH="/data/jiayi/SEAL/results/MATH_train/Qwen3-4B/baseline_10000/vector_500_500/layer_28_transition_reflection_steervec.pt" \
-STATIC_STEER_SCALE=-1.0 \
+STATIC_STEER_PATH="/home/jiayi/TensorRouter/TensorRouter/vector_500_500/DeepSeek-R1-Distill-Qwen-1.5B/layer_21_highrank_${RANK}_transition_reflection_steervec.pt" \
+STATIC_STEER_SCALE=1.0 \
 python test_steer.py
-
-for RANK in 50 60 70; do
-    export RANK
-    STATIC_STEER_ENABLE=1 \
-    STATIC_STEER_LAYER=28 \
-    STATIC_STEER_MATCH_TOKEN_IDS=271 \
-    STATIC_STEER_PATH="/data/jiayi/SEAL/results/MATH_train/Qwen3-4B/baseline_10000/vector_500_500/layer_28_rank_${RANK}_transition_reflection_steervec.pt" \
-    STATIC_STEER_SCALE=1.0 \
-    python test_steer.py
-done
-
+done 
 
 # STATIC_STEER_ENABLE=0 python test_steer_serve.py
 

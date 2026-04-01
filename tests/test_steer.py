@@ -55,8 +55,8 @@ print("double newline:", tok.encode("\n\n", add_special_tokens=False))
 STATIC_STEER_MATCH_TOKEN_IDS = tok.encode("\n\n", add_special_tokens=False)[0]
 
 NUM_SAMPLES = 30
-MAX_TOKENS = 8192
-task='aime_2024'
+MAX_TOKENS = 16384
+task='aime_2025'
 
 
 def get_first_user_msg(problem, options=None):
@@ -90,11 +90,10 @@ def get_first_user_msg(problem, options=None):
 
 
 def _task_to_prompt_option(task_name: str) -> str:
-    if task_name in {"aime_2024", "math", "MATH-500"}:
-        return "aime"
     if task_name == "livecodebench_v6":
         return "lcb"
-    raise NotImplementedError(f"Unsupported task: {task_name}")
+    else:
+        return "aime"
 
 if STATIC_STEER_ENABLE==0:
     OUTPUT_FILE = f"results/{task}_serve_results_{STATIC_STEER_ENABLE}_test6.jsonl"
@@ -179,13 +178,18 @@ if task == "livecodebench_v6":
         problems.append(dict(example))
 
     print(f"Loaded {len(problems)} problems from LiveCodeBench v6")
-else:
+elif task == "aime_2024":
     data = load_dataset(f"HuggingFaceH4/{task}", split="train")
     for example in data:
         gt = extract_box(example["solution"])
         problems.append(example["problem"])
         answers.append(example["answer"])
-
+elif task == "aime_2025":
+    data = load_dataset(f"yentinglin/{task}", split="train")
+    for example in data:
+        gt = extract_box(example["solution"])
+        problems.append(example["problem"])
+        answers.append(example["answer"]) 
 # 看看前两个
 print("Problems:", problems[:2])
 print("Answers:", answers[:2])
@@ -223,7 +227,7 @@ example_answers = llm.generate(
     SamplingParams(
         # temperature=0.6, top_p=0.95, # https://huggingface.co/Qwen/QwQ-32B#usage-guidelines
         temperature=0,
-        max_tokens=8192+2000,
+        max_tokens=16384+2000,
         skip_special_tokens=False,
     ), 
 )
